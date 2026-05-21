@@ -1279,10 +1279,16 @@ function _clrSh(ctx){ctx.shadowColor='transparent';ctx.shadowBlur=0;ctx.shadowOf
 let _shadowIntensity = 2;
 function adjShadow(delta){
   _shadowIntensity = Math.max(0,Math.min(5,_shadowIntensity+delta));
+  const display = ['Flat','Light','Soft','Medium','Deep','Bold'][_shadowIntensity];
   document.getElementById('shadowVal').textContent = _shadowIntensity;
-  // Re-apply to selected text
-  if(S.selId){const obj=S.texts.find(t=>t.id===S.selId);if(obj){const el=document.getElementById(S.selId);if(el){const st=STYLES.find(s=>s.id===obj.style)||STYLES[0];st.apply(el,obj.color,ANIM);}}}
-  showToast(`Shadow: ${_shadowIntensity}`);
+  // Re-apply to ALL text layers so change is visible immediately
+  S.texts.forEach(obj=>{
+    const el=document.getElementById(obj.id);
+    if(!el)return;
+    const st=STYLES.find(s=>s.id===obj.style)||STYLES[0];
+    st.apply(el,obj.color,ANIM);
+  });
+  showToast(`🌑 Shadow: ${display}`);
 }
 
 // Export mode flag — pauses animations during render
@@ -2065,11 +2071,12 @@ async function startRender(){
   const cw=Math.round(vw*scale),ch=Math.round(vh*scale);canvas.width=cw;canvas.height=ch;
   let canvasStream;try{canvasStream=canvas.captureStream(30);}catch(e){showToast('❌ Browser support नहीं','err');resetRenderUI();return;}
   try{const vs=vid.captureStream?vid.captureStream():null;if(vs)vs.getAudioTracks().forEach(t=>canvasStream.addTrack(t));}catch(e){}
-  const MIMES=['video/mp4;codecs=h264,aac','video/mp4;codecs=avc1','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  // Android Chrome: webm/vp8 most reliable for WhatsApp
+  const MIMES=['video/webm;codecs=vp8,opus','video/webm;codecs=vp9,opus','video/webm','video/mp4;codecs=h264,aac','video/mp4;codecs=avc1','video/mp4'];
   const mime=MIMES.find(m=>MediaRecorder.isTypeSupported(m))||'';
   let recorder;try{recorder=new MediaRecorder(canvasStream,mime?{mimeType:mime,videoBitsPerSecond:2500000}:{});}catch(e){try{recorder=new MediaRecorder(canvasStream);}catch(e2){showToast('❌ Recording error','err');resetRenderUI();return;}}
   const chunks=[];recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)chunks.push(e.data);};
-  const duration=Math.min(vid.duration||60,60);let rafId=null;
+  const duration=Math.min(vid.duration||90,90);let rafId=null;
 
   function drawFrame(){
     ctx.clearRect(0,0,cw,ch);ctx.drawImage(vid,0,0,cw,ch);
@@ -2217,13 +2224,34 @@ async function openShare(){
   S.exportedUrl=url;document.getElementById('shImg').src=url;document.getElementById('shareMd').classList.add('on');
 }
 async function shareVideoFile(){
-  if(!recordedBlob){showToast('⚠️ Render करें','warn');return;}
-  const file=new File([recordedBlob],'temtext-video.mp4',{type:'video/mp4',lastModified:Date.now()});
-  if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-    try{await navigator.share({title:'Temtext Studio ⚡',text:'देखो मेरी creation!',files:[file]});showToast('✅ Video Shared!');TG.onShare('🎬 Direct');return;}
-    catch(err){if(err.name==='AbortError'){showToast('Cancel');return;}}
+  if(!recordedBlob||recordedBlob.size===0){showToast('⚠️ Render करें','warn');return;}
+
+  // Use actual MIME from recorded blob — do NOT force mp4 if webm was recorded
+  const actualMime = recordedBlob.type || 'video/webm';
+  const ext = actualMime.includes('mp4') ? 'mp4' : 'webm';
+  const fileName = `temtext-video.${ext}`;
+
+  // Create clean finalized blob with correct MIME
+  const finalBlob = new Blob([recordedBlob], {type: actualMime});
+  const file = new File([finalBlob], fileName, {type: actualMime, lastModified: Date.now()});
+
+  // Try native share first
+  if(navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
+    try{
+      await navigator.share({title:'Temtext Studio ⚡', text:'देखो मेरी creation!', files:[file]});
+      showToast('✅ Video Shared!');TG.onShare('🎬 Direct');return;
+    }catch(err){
+      if(err.name==='AbortError'){showToast('Cancel');return;}
+      // Fall through to download
+    }
   }
-  document.getElementById('dlLink').click();showToast('📥 Download → Gallery से WhatsApp पर भेजें');TG.onShare('📥 DL fallback');
+  // Fallback: download to gallery
+  const url = URL.createObjectURL(finalBlob);
+  const a = document.createElement('a');
+  a.href = url; a.download = fileName; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
+  showToast('📥 Gallery में Save → WhatsApp से भेजें');
+  TG.onShare('📥 DL fallback');
 }
 async function instantShare(){
   if(!S.exportedUrl){showToast('⚠️ Not ready','warn');return;}if(!navigator.share){saveImg();return;}
